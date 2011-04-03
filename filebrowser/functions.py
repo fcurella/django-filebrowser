@@ -10,6 +10,7 @@ from django.utils.translation import ugettext as _
 from django.utils.safestring import mark_safe
 from django.core.files import File
 from django.core.files.storage import default_storage
+from django.utils.encoding import smart_str
 
 # filebrowser imports
 from filebrowser.settings import *
@@ -73,7 +74,7 @@ def get_version_path(value, version_prefix):
     Returns a path relative to MEDIA_ROOT.
     """
     
-    if os.path.isfile(os.path.join(MEDIA_ROOT, value)):
+    if os.path.isfile(smart_str(os.path.join(MEDIA_ROOT, value))):
         path, filename = os.path.split(value)
         filename, ext = os.path.splitext(filename)
         
@@ -85,7 +86,7 @@ def get_version_path(value, version_prefix):
             # so we strip the suffix (aka. version_perfix)
             new_filename = filename.replace("_" + tmp[len(tmp)-1], "")
             # check if the version exists when we use the new_filename
-            if os.path.isfile(os.path.join(MEDIA_ROOT, path, new_filename + "_" + version_prefix + ext)):
+            if os.path.isfile(smart_str(os.path.join(MEDIA_ROOT, path, new_filename + "_" + version_prefix + ext))):
                 # our "original" filename seem to be filename_<version> construct
                 # so we replace it with the new_filename
                 filename = new_filename
@@ -133,7 +134,7 @@ def url_join(*args):
     else:
         url = "/"
     for arg in args:
-        arg = unicode(arg).replace("\\", "/")
+        arg = arg.replace("\\", "/")
         arg_split = arg.split("/")
         for elem in arg_split:
             if elem != "" and elem != "http:":
@@ -148,12 +149,9 @@ def get_path(path):
     """
     Get Path.
     """
-    if os.path.isabs(path):
-        return path[1:]
-
-    if path.startswith('.') or not os.path.isdir(os.path.join(MEDIA_ROOT, DIRECTORY, path)):
+    
+    if path.startswith('.') or os.path.isabs(path) or not os.path.isdir(os.path.join(MEDIA_ROOT, DIRECTORY, path)):
         return None
-
     return path
 
 
@@ -162,7 +160,9 @@ def get_file(path, filename):
     Get File.
     """
     
-    if not os.path.isfile(os.path.join(MEDIA_ROOT, DIRECTORY, path, filename)) and not os.path.isdir(os.path.join(MEDIA_ROOT, DIRECTORY, path, filename)):
+    converted_path = smart_str(os.path.join(MEDIA_ROOT, DIRECTORY, path, filename))
+    
+    if not os.path.isfile(converted_path) and not os.path.isdir(converted_path):
         return None
     return filename
 
@@ -223,6 +223,7 @@ def get_settings_var():
     settings_var['VERSIONS'] = VERSIONS
     settings_var['ADMIN_VERSIONS'] = ADMIN_VERSIONS
     settings_var['ADMIN_THUMBNAIL'] = ADMIN_THUMBNAIL
+    settings_var['PREVIEW_VERSION'] = PREVIEW_VERSION
     # FileBrowser Options
     settings_var['MAX_UPLOAD_SIZE'] = MAX_UPLOAD_SIZE
     # Convert Filenames
@@ -234,9 +235,13 @@ def handle_file_upload(path, file):
     """
     Handle File Upload.
     """
-    
-    file_path = os.path.join(path, file.name)
-    uploadedfile = default_storage.save(file_path, file)
+    try:
+        file_path = os.path.join(path, file.name)
+        uploadedfile = default_storage.save(file_path, file)
+    except Exception, inst:
+        print "___filebrowser.functions.handle_file_upload(): could not save uploaded file"
+        print "ERROR: ", inst
+        print "___"
     return uploadedfile
 
 
@@ -286,18 +291,22 @@ def version_generator(value, version_prefix, force=None):
     ImageFile.MAXBLOCK = IMAGE_MAXBLOCK # default is 64k
     
     try:
-        im = Image.open(os.path.join(MEDIA_ROOT, value))
+        im = Image.open(smart_str(os.path.join(MEDIA_ROOT, value)))
         version_path = get_version_path(value, version_prefix)
-        absolute_version_path = os.path.join(MEDIA_ROOT, version_path)
+        absolute_version_path = smart_str(os.path.join(MEDIA_ROOT, version_path))
         version_dir = os.path.split(absolute_version_path)[0]
         if not os.path.isdir(version_dir):
             os.makedirs(version_dir)
             os.chmod(version_dir, 0775)
         version = scale_and_crop(im, VERSIONS[version_prefix]['width'], VERSIONS[version_prefix]['height'], VERSIONS[version_prefix]['opts'])
-        try:
-            version.save(absolute_version_path, quality=90, optimize=(os.path.splitext(version_path)[1].lower() != '.gif'))
-        except IOError:
-            version.save(absolute_version_path, quality=90)
+        if version:
+            try:
+                version.save(absolute_version_path, quality=VERSION_QUALITY, optimize=(os.path.splitext(version_path)[1].lower() != '.gif'))
+            except IOError:
+                version.save(absolute_version_path, quality=VERSION_QUALITY)
+        else:
+            # version wasn't created
+            pass
         return version_path
     except:
         return None
@@ -309,6 +318,12 @@ def scale_and_crop(im, width, height, opts):
     """
     
     x, y   = [float(v) for v in im.size]
+    
+    if 'upscale' not in opts and x < width:
+        # version would be bigger than original
+        # no need to create this version, because "upscale" isn't defined.
+        return False
+    
     if width:
         xr = float(width)
     else:
@@ -369,4 +384,5 @@ def convert_filename(value):
         return value.replace(" ", "_").lower()
     else:
         return value
+
 
